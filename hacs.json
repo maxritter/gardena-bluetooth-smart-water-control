@@ -1,0 +1,6 @@
+{
+  "name": "Gardena Bluetooth Smart Water Control (patched)",
+  "domains": ["gardena_bluetooth"],
+  "render_readme": true,
+  "homeassistant": "2026.4.0"
+}
