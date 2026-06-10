@@ -32,6 +32,11 @@ DEFAULT_MISSING = object()
 DEFAULT_TYPE = TypeVar("DEFAULT_TYPE")
 DEFAULT_DELAY = 1
 
+# Addresses for which a stale-bond reset has already been attempted in this
+# process. Bond removal is only tried once per address so healthy bonds are
+# not destroyed on repeated reconnect attempts.
+_BOND_RESET_DONE: set[str] = set()
+
 
 class CallLaterJob:
     """Helper to contain a function that is to be called later."""
@@ -110,6 +115,40 @@ class CachedConnection:
             max_attempts=self._max_attempts,
         )
         LOGGER.debug("Connected to %s", device.address)
+
+        # BlueZ does not bond automatically on the first encrypted read
+        # (unlike macOS CoreBluetooth). G-1903x devices gate the Valve1/Valve2
+        # characteristics behind an encrypted link, so pair explicitly here.
+        # Already-bonded devices return quickly; backends without pairing
+        # support (e.g. ESPHome proxies) raise NotImplementedError.
+        try:
+            await self._client.pair()
+        except (BleakError, NotImplementedError, EOFError) as exception:
+            if device.address not in _BOND_RESET_DONE:
+                # A rejected pairing can leave a stale bond in BlueZ that
+                # blocks all further pairing attempts. Clear it once per
+                # process so the next connection can negotiate a fresh bond.
+                _BOND_RESET_DONE.add(device.address)
+                LOGGER.debug(
+                    "Pairing with %s failed (%s); removing potentially stale bond",
+                    device.address,
+                    exception,
+                )
+                try:
+                    await self._client.unpair()
+                except (BleakError, NotImplementedError, EOFError) as unpair_error:
+                    LOGGER.debug(
+                        "Bond removal for %s failed: %s",
+                        device.address,
+                        unpair_error,
+                    )
+            else:
+                LOGGER.debug(
+                    "Pairing with %s failed or not needed: %s",
+                    device.address,
+                    exception,
+                )
+
         return self._client
 
     @asynccontextmanager
