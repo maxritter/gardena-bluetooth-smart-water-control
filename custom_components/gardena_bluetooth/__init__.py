@@ -91,7 +91,14 @@ async def async_setup_entry(
 
     address = entry.data[CONF_ADDRESS]
 
-    mfg_data = await async_get_manufacturer_data({address})
+    try:
+        mfg_data = await async_get_manufacturer_data({address})
+    except TimeoutError as exception:
+        # Device not advertising (asleep / out of range) - let HA retry
+        # with backoff instead of failing the entry permanently.
+        raise ConfigEntryNotReady(
+            f"Device {address} not found during scan"
+        ) from exception
     product_type = mfg_data[address].product_type
     if product_type == ProductType.UNKNOWN:
         raise ConfigEntryNotReady("Unable to find product type")
