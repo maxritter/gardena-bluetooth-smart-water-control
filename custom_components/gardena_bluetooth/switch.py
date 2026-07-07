@@ -85,6 +85,8 @@ class GardenaBluetoothValveSwitch(GardenaBluetoothEntity, SwitchEntity):
 class GardenaBluetoothValveXSwitch(GardenaBluetoothEntity, SwitchEntity):
     """Switch alias for the Smart Water Control family (Valve1/Valve2)."""
 
+    _converging = False
+
     def __init__(
         self,
         coordinator: GardenaBluetoothCoordinator,
@@ -108,7 +110,10 @@ class GardenaBluetoothValveXSwitch(GardenaBluetoothEntity, SwitchEntity):
         self._attr_entity_registry_enabled_default = False
 
     def _handle_coordinator_update(self) -> None:
-        self._attr_is_on = self.coordinator.get_cached(self._service.state)
+        # While a command is converging, readbacks may predate the command
+        # being applied by the device; the command handler sets the state.
+        if not self._converging:
+            self._attr_is_on = self.coordinator.get_cached(self._service.state)
         super()._handle_coordinator_update()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
@@ -116,14 +121,24 @@ class GardenaBluetoothValveXSwitch(GardenaBluetoothEntity, SwitchEntity):
         duration = (
             self.coordinator.get_cached(self._service.manual_watering_duration) or 1800
         )
-        await self.coordinator.client.start_watering(self._service, duration)
-        self._attr_is_on = True
-        self.async_write_ha_state()
-        await self.coordinator.async_refresh()
+        self._converging = True
+        try:
+            await self.coordinator.client.start_watering(self._service, duration)
+            await self._async_wait_for_state(True)
+        finally:
+            self._converging = False
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
-        await self.coordinator.client.stop_watering(self._service)
-        self._attr_is_on = False
+        self._converging = True
+        try:
+            await self.coordinator.client.stop_watering(self._service)
+            await self._async_wait_for_state(False)
+        finally:
+            self._converging = False
+
+    async def _async_wait_for_state(self, target: bool) -> None:
+        """Wait for the asynchronously applied watering command to be reflected."""
+        state = await self.coordinator.read_char_until(self._service.state, target)
+        self._attr_is_on = target if state is None else state
         self.async_write_ha_state()
-        await self.coordinator.async_refresh()

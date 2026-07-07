@@ -127,7 +127,14 @@ class GardenaBluetoothValveX(GardenaBluetoothEntity, ValveEntity):
         self._attr_unique_id = f"{coordinator.address}-{service.state.unique_id}"
 
     def _handle_coordinator_update(self) -> None:
-        self._attr_is_closed = not self.coordinator.get_cached(self._service.state)
+        state = self.coordinator.get_cached(self._service.state)
+        self._attr_is_closed = None if state is None else not state
+        # Transitions end only once the device reports the target state, so
+        # a readback from before the command was applied cannot end them.
+        if state:
+            self._attr_is_opening = False
+        elif state is not None:
+            self._attr_is_closing = False
         super()._handle_coordinator_update()
 
     async def async_open_valve(self, **kwargs: Any) -> None:
@@ -136,14 +143,28 @@ class GardenaBluetoothValveX(GardenaBluetoothEntity, ValveEntity):
             self.coordinator.get_cached(self._service.manual_watering_duration)
             or FALLBACK_WATERING_TIME_IN_SECONDS
         )
-        await self.coordinator.client.start_watering(self._service, duration)
-        self._attr_is_closed = False
+        self._attr_is_opening = True
         self.async_write_ha_state()
-        await self.coordinator.async_refresh()
+        try:
+            await self.coordinator.client.start_watering(self._service, duration)
+            await self._async_wait_for_state(True)
+        finally:
+            self._attr_is_opening = False
+            self.async_write_ha_state()
 
     async def async_close_valve(self, **kwargs: Any) -> None:
         """Close the valve."""
-        await self.coordinator.client.stop_watering(self._service)
-        self._attr_is_closed = True
+        self._attr_is_closing = True
         self.async_write_ha_state()
-        await self.coordinator.async_refresh()
+        try:
+            await self.coordinator.client.stop_watering(self._service)
+            await self._async_wait_for_state(False)
+        finally:
+            self._attr_is_closing = False
+            self.async_write_ha_state()
+
+    async def _async_wait_for_state(self, target: bool) -> None:
+        """Wait for the asynchronously applied watering command to be reflected."""
+        state = await self.coordinator.read_char_until(self._service.state, target)
+        if state is not None:
+            self._attr_is_closed = not state
