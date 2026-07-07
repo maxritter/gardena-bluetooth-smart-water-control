@@ -1,5 +1,6 @@
 """Support for valve entities."""
 
+import asyncio
 from typing import Any
 
 from gardena_bluetooth.const import Valve, Valve1, Valve2, ValveX
@@ -101,6 +102,7 @@ class GardenaBluetoothValveX(GardenaBluetoothEntity, ValveEntity):
     _attr_reports_position = False
     _attr_supported_features = ValveEntityFeature.OPEN | ValveEntityFeature.CLOSE
     _attr_device_class = ValveDeviceClass.WATER
+    _convergence_task: asyncio.Task[None] | None = None
 
     def __init__(
         self,
@@ -137,6 +139,12 @@ class GardenaBluetoothValveX(GardenaBluetoothEntity, ValveEntity):
             self._attr_is_closing = False
         super()._handle_coordinator_update()
 
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel a running convergence tracker."""
+        if self._convergence_task:
+            self._convergence_task.cancel()
+        await super().async_will_remove_from_hass()
+
     async def async_open_valve(self, **kwargs: Any) -> None:
         """Open the valve for the configured manual watering duration."""
         duration = (
@@ -144,27 +152,48 @@ class GardenaBluetoothValveX(GardenaBluetoothEntity, ValveEntity):
             or FALLBACK_WATERING_TIME_IN_SECONDS
         )
         self._attr_is_opening = True
+        self._attr_is_closing = False
         self.async_write_ha_state()
         try:
             await self.coordinator.client.start_watering(self._service, duration)
-            await self._async_wait_for_state(True)
-        finally:
+        except Exception:
             self._attr_is_opening = False
             self.async_write_ha_state()
+            raise
+        self._track_convergence(True)
 
     async def async_close_valve(self, **kwargs: Any) -> None:
         """Close the valve."""
         self._attr_is_closing = True
+        self._attr_is_opening = False
         self.async_write_ha_state()
         try:
             await self.coordinator.client.stop_watering(self._service)
-            await self._async_wait_for_state(False)
-        finally:
+        except Exception:
             self._attr_is_closing = False
             self.async_write_ha_state()
+            raise
+        self._track_convergence(False)
 
-    async def _async_wait_for_state(self, target: bool) -> None:
-        """Wait for the asynchronously applied watering command to be reflected."""
-        state = await self.coordinator.read_char_until(self._service.state, target)
+    def _track_convergence(self, target: bool) -> None:
+        """Track the asynchronously applied watering command in the background.
+
+        Opening takes a few seconds, physically closing the hydraulic valve
+        up to two minutes; the transition state is shown until the device
+        reports the target state.
+        """
+        if self._convergence_task:
+            self._convergence_task.cancel()
+        self._convergence_task = self.hass.async_create_task(
+            self._async_converge(target)
+        )
+
+    async def _async_converge(self, target: bool) -> None:
+        state = await self.coordinator.read_char_until(
+            self._service.state, target, attempts=24, interval=5.0
+        )
         if state is not None:
             self._attr_is_closed = not state
+        self._attr_is_opening = False
+        self._attr_is_closing = False
+        self.async_write_ha_state()

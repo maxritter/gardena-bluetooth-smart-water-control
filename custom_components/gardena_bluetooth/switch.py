@@ -1,5 +1,6 @@
 """Support for switch entities."""
 
+import asyncio
 from typing import Any
 
 from gardena_bluetooth.const import Valve, Valve1, Valve2, ValveX
@@ -86,6 +87,7 @@ class GardenaBluetoothValveXSwitch(GardenaBluetoothEntity, SwitchEntity):
     """Switch alias for the Smart Water Control family (Valve1/Valve2)."""
 
     _converging = False
+    _convergence_task: asyncio.Task[None] | None = None
 
     def __init__(
         self,
@@ -116,29 +118,45 @@ class GardenaBluetoothValveXSwitch(GardenaBluetoothEntity, SwitchEntity):
             self._attr_is_on = self.coordinator.get_cached(self._service.state)
         super()._handle_coordinator_update()
 
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel a running convergence tracker."""
+        if self._convergence_task:
+            self._convergence_task.cancel()
+        await super().async_will_remove_from_hass()
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the entity on for the configured manual watering duration."""
         duration = (
             self.coordinator.get_cached(self._service.manual_watering_duration) or 1800
         )
-        self._converging = True
-        try:
-            await self.coordinator.client.start_watering(self._service, duration)
-            await self._async_wait_for_state(True)
-        finally:
-            self._converging = False
+        await self.coordinator.client.start_watering(self._service, duration)
+        self._attr_is_on = True
+        self.async_write_ha_state()
+        self._track_convergence(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
+        await self.coordinator.client.stop_watering(self._service)
+        self._attr_is_on = False
+        self.async_write_ha_state()
+        self._track_convergence(False)
+
+    def _track_convergence(self, target: bool) -> None:
+        """Track the asynchronously applied watering command in the background."""
+        if self._convergence_task:
+            self._convergence_task.cancel()
         self._converging = True
+        self._convergence_task = self.hass.async_create_task(
+            self._async_converge(target)
+        )
+
+    async def _async_converge(self, target: bool) -> None:
         try:
-            await self.coordinator.client.stop_watering(self._service)
-            await self._async_wait_for_state(False)
+            state = await self.coordinator.read_char_until(
+                self._service.state, target, attempts=24, interval=5.0
+            )
         finally:
             self._converging = False
-
-    async def _async_wait_for_state(self, target: bool) -> None:
-        """Wait for the asynchronously applied watering command to be reflected."""
-        state = await self.coordinator.read_char_until(self._service.state, target)
-        self._attr_is_on = target if state is None else state
+        if state is not None:
+            self._attr_is_on = state
         self.async_write_ha_state()
