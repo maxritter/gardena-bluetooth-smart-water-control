@@ -17,7 +17,10 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-SCAN_INTERVAL = timedelta(seconds=60)
+# 20s keeps manual actions on the device reasonably fresh in HA;
+# the device carries no valve state in its advertisements, so
+# polling is the only way to observe external changes.
+SCAN_INTERVAL = timedelta(seconds=20)
 LOGGER = logging.getLogger(__name__)
 
 type GardenaBluetoothConfigEntry = ConfigEntry[GardenaBluetoothCoordinator]
