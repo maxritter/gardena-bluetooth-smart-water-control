@@ -59,6 +59,9 @@ PLATFORMS: list[Platform] = [
 LOGGER = logging.getLogger(__name__)
 TIMEOUT = 20.0
 DISCONNECT_DELAY = 5
+# One connect timeout must not fail a whole poll cycle; the garden device
+# regularly misses the first connection attempt.
+CONNECT_ATTEMPTS = 4
 
 
 def get_connection(hass: HomeAssistant, address: str) -> CachedConnection:
@@ -72,7 +75,7 @@ def get_connection(hass: HomeAssistant, address: str) -> CachedConnection:
             raise DeviceUnavailable("Unable to find device")
         return device
 
-    return CachedConnection(DISCONNECT_DELAY, _device_lookup)
+    return CachedConnection(DISCONNECT_DELAY, _device_lookup, max_attempts=CONNECT_ATTEMPTS)
 
 
 async def _update_timestamp(client: Client, characteristics: CharacteristicTime):
