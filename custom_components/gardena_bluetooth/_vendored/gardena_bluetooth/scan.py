@@ -6,7 +6,6 @@ from collections.abc import AsyncGenerator
 
 from bleak import AdvertisementData, BaseBleakScanner, BleakScanner, BLEDevice
 
-from .const import ScanService
 from .parse import ManufacturerData
 
 LOGGER = logging.getLogger(__name__)
@@ -41,11 +40,6 @@ async def advertisement_queue(backend: type[BaseBleakScanner] | None = None):
     def _callback(device, advertisement):
         queue.put_nowait((device, advertisement))
 
-    # NOTE: do NOT pass service_uuids=[ScanService] here. On macOS the
-    # CoreBluetooth-level filter hides devices that don't advertise the scan
-    # service UUID in their ad packet — the newer Smart Water Control
-    # G-19033-20 advertises only manufacturer data, no service UUIDs. The
-    # async iterator below filters by Gardena's manufacturer id (0x0426).
     scanner = BleakScanner(backend=backend, detection_callback=_callback)
 
     await scanner.start()
@@ -64,13 +58,8 @@ async def async_scan_devices(
     async with advertisement_queue(backend) as queue:
         while True:
             device, advertisement = await queue.get()
-            # Accept either the legacy scan-service-uuid advert OR the newer
-            # G-19033-20 packets that only carry manufacturer data.
-            if (
-                ScanService not in advertisement.service_uuids
-                and ManufacturerData.company
-                not in (advertisement.manufacturer_data or {})
-            ):
+
+            if ManufacturerData.company not in (advertisement.manufacturer_data or {}):
                 continue
 
             data = devices.get(device.address)

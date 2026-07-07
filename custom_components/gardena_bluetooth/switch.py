@@ -100,7 +100,7 @@ class GardenaBluetoothValveXSwitch(GardenaBluetoothEntity, SwitchEntity):
             },
         )
         self._service = service
-        self._attr_unique_id = f"{coordinator.address}-{service.state.unique_id}-switch"
+        self._attr_unique_id = f"{coordinator.address}-{service.state.unique_id}"
         self._attr_translation_key = (
             "state_valve_2" if service is Valve2 else "state_valve_1"
         )
