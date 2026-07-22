@@ -58,7 +58,13 @@ PLATFORMS: list[Platform] = [
 ]
 LOGGER = logging.getLogger(__name__)
 TIMEOUT = 20.0
-DISCONNECT_DELAY = 5
+# Keep the BLE connection alive across poll cycles (SCAN_INTERVAL is 20s).
+# An established connection rides adaptive frequency hopping around noisy
+# channels, while every fresh connect must survive the noise cold - on a
+# marginal link (garden distance / 2.4GHz interference) reconnecting per
+# poll was the dominant failure mode. Trade-off: slightly higher device
+# battery drain and one BLE slot held on the serving proxy.
+DISCONNECT_DELAY = 90
 # One connect timeout must not fail a whole poll cycle; the garden device
 # regularly misses the first connection attempt.
 CONNECT_ATTEMPTS = 4
