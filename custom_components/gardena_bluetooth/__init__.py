@@ -157,8 +157,12 @@ async def async_setup_entry(
     )
 
     entry.runtime_data = coordinator
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # Forward platforms LAST and refresh first (upstream ordering): if setup
+    # is cancelled mid-way (e.g. a reload arriving during a slow BLE refresh),
+    # no platform is left half-registered - a re-run used to die with
+    # "Config entry ... has already been setup!" until a full HA restart.
     await coordinator.async_refresh()
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
