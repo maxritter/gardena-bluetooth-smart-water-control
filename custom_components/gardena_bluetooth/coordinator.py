@@ -60,9 +60,25 @@ class GardenaBluetoothCoordinator(DataUpdateCoordinator[dict[str, bytes]]):
         self.device_info = device_info
 
     async def async_shutdown(self) -> None:
-        """Shutdown coordinator and any connection."""
+        """Shutdown coordinator and any connection.
+
+        The disconnect is bounded: a wedged proxy connection (phantom BLE
+        connection on an ESPHome proxy) used to make this await forever,
+        leaving the config entry stuck in unload_in_progress until a full
+        Home Assistant restart. Dropping the connection after a timeout is
+        always safe - the proxy cleans up on its next reconnect.
+        """
         await super().async_shutdown()
-        await self.client.disconnect()
+        try:
+            async with asyncio.timeout(10):
+                await self.client.disconnect()
+        except (TimeoutError, GardenaBluetoothException) as exception:
+            LOGGER.warning(
+                "Disconnect of %s timed out or failed during shutdown; "
+                "dropping connection (%s)",
+                self.address,
+                exception,
+            )
 
     async def _async_update_data(self) -> dict[str, bytes]:
         """Poll the device."""
