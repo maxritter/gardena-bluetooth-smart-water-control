@@ -39,7 +39,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import CONF_PRODUCT_TYPE, DOMAIN
 from .coordinator import (
     DeviceUnavailable,
     GardenaBluetoothConfigEntry,
@@ -94,17 +94,33 @@ async def async_setup_entry(
 
     address = entry.data[CONF_ADDRESS]
 
-    try:
-        mfg_data = await async_get_manufacturer_data({address})
-    except TimeoutError as exception:
-        # Device not advertising (asleep / out of range) - let HA retry
-        # with backoff instead of failing the entry permanently.
-        raise ConfigEntryNotReady(
-            f"Device {address} not found during scan"
-        ) from exception
-    product_type = mfg_data[address].product_type
+    # Prefer the product type stored at pairing time: Aqua Contours devices
+    # only advertise their product TLV while in pairing mode, so a live scan
+    # can never succeed after a restart. Fall back to scanning only for
+    # entries created before CONF_PRODUCT_TYPE existed, and migrate them.
+    product_type = ProductType.UNKNOWN
+    if stored := entry.data.get(CONF_PRODUCT_TYPE):
+        try:
+            product_type = ProductType[stored]
+        except KeyError:
+            LOGGER.warning("Ignoring unknown stored product type: %s", stored)
+
     if product_type == ProductType.UNKNOWN:
-        raise ConfigEntryNotReady("Unable to find product type")
+        try:
+            mfg_data = await async_get_manufacturer_data({address})
+        except TimeoutError as exception:
+            # Device not advertising (asleep / out of range) - let HA retry
+            # with backoff instead of failing the entry permanently.
+            raise ConfigEntryNotReady(
+                f"Device {address} not found during scan"
+            ) from exception
+        product_type = mfg_data[address].product_type
+        if product_type == ProductType.UNKNOWN:
+            raise ConfigEntryNotReady("Unable to find product type")
+        # One-time migration: persist so the next restart needs no scan.
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_PRODUCT_TYPE: product_type.name}
+        )
 
     client = Client(get_connection(hass, address), product_type)
     try:

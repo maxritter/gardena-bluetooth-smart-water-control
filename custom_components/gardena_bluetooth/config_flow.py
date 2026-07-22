@@ -19,7 +19,7 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.data_entry_flow import AbortFlow
 
 from . import get_connection
-from .const import DOMAIN
+from .const import CONF_PRODUCT_TYPE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ class GardenaBluetoothConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize the config flow."""
         self.devices: dict[str, str] = {}
+        self.product_types: dict[str, str] = {}
         self.address: str | None
 
     async def async_read_data(self):
@@ -72,7 +73,13 @@ class GardenaBluetoothConfigFlow(ConfigFlow, domain=DOMAIN):
         finally:
             await client.disconnect()
 
-        return {CONF_ADDRESS: self.address}
+        data = {CONF_ADDRESS: self.address}
+        # Persist the product type resolved during pairing: Aqua Contours
+        # devices only advertise it in pairing mode, so a setup-time re-scan
+        # cannot be relied on after a restart.
+        if product_type := self.product_types.get(self.address):
+            data[CONF_PRODUCT_TYPE] = product_type
+        return data
 
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfo
@@ -86,6 +93,7 @@ class GardenaBluetoothConfigFlow(ConfigFlow, domain=DOMAIN):
 
         self.address = discovery_info.address
         self.devices = {discovery_info.address: PRODUCT_NAMES[product_type]}
+        self.product_types[discovery_info.address] = product_type.name
         await self.async_set_unique_id(self.address)
         self._abort_if_unique_id_configured()
         return await self.async_step_confirm()
@@ -134,6 +142,7 @@ class GardenaBluetoothConfigFlow(ConfigFlow, domain=DOMAIN):
             if mfg_data.product_type not in _SUPPORTED_PRODUCT_TYPES:
                 continue
             self.devices[address] = PRODUCT_NAMES[mfg_data.product_type]
+            self.product_types[address] = mfg_data.product_type.name
 
         # Keep selection sorted by address to ensure stable tests
         self.devices = dict(sorted(self.devices.items(), key=lambda x: x[0]))
