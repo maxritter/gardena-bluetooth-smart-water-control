@@ -21,6 +21,9 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 # the device carries no valve state in its advertisements, so
 # polling is the only way to observe external changes.
 SCAN_INTERVAL = timedelta(seconds=20)
+# Consecutive failed polls tolerated (serving cached data) before entities
+# are marked unavailable. 3 polls = ~60s bridge over transient proxy wedges.
+MAX_FAILED_POLLS = 3
 LOGGER = logging.getLogger(__name__)
 
 type GardenaBluetoothConfigEntry = ConfigEntry[GardenaBluetoothCoordinator]
@@ -55,6 +58,7 @@ class GardenaBluetoothCoordinator(DataUpdateCoordinator[dict[str, bytes]]):
         )
         self.address = address
         self.data = {}
+        self._failed_polls = 0
         self.client = client
         self.characteristics = characteristics
         self.device_info = device_info
@@ -95,9 +99,26 @@ class GardenaBluetoothCoordinator(DataUpdateCoordinator[dict[str, bytes]]):
             except CharacteristicNoAccess as exception:
                 LOGGER.debug("Unable to get data for %s due to %s", uuid, exception)
             except (GardenaBluetoothException, DeviceUnavailable) as exception:
+                # Grace period: BLE proxies occasionally wedge for a poll or
+                # two (dropped-connection bug in ESPHome 2025.x); blanking
+                # every entity on the first failed 20s poll made the device
+                # flap between available and unavailable. Serve last-known
+                # data for up to MAX_FAILED_POLLS consecutive failures, then
+                # report unavailable for real.
+                self._failed_polls += 1
+                if self.data and self._failed_polls <= MAX_FAILED_POLLS:
+                    LOGGER.warning(
+                        "Poll %d/%d for %s failed (%s); serving cached data",
+                        self._failed_polls,
+                        MAX_FAILED_POLLS,
+                        self.address,
+                        exception,
+                    )
+                    return self.data
                 raise UpdateFailed(
                     f"Unable to update data for {uuid} due to {exception}"
                 ) from exception
+        self._failed_polls = 0
         return data
 
     def get_cached(
